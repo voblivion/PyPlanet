@@ -11,7 +11,7 @@ from pyplanet.apps.core.statistics.models import Score, Rank
 from pyplanet.apps.core.statistics.views.dashboard import StatsDashboardView
 from pyplanet.apps.core.statistics.views.ranks import TopRanksView
 from pyplanet.apps.core.statistics.views.records import TopSumsView
-from pyplanet.apps.core.statistics.views.score import StatsScoresListView
+from pyplanet.apps.core.statistics.views.score import StatsScoresListView, CheckpointComparisonView
 from pyplanet.apps.core.trackmania.callbacks import finish
 from pyplanet.apps.core.maniaplanet.callbacks import map
 from pyplanet.contrib.command import Command
@@ -67,6 +67,8 @@ class TrackmaniaComponent:
 			Command('topranks', target=self.chat_topranks, description='Displays a list of top ranked players.'),
 			Command(command='scoreprogression', aliases=['progression'], target=self.chat_score_progression,
 					description='Displays your time/score progression on the current map.'),
+			Command(command='cpcomparison', aliases=['cp'], target=self.open_cp_comparison,
+					description='Compares your checkpoints times with the local record and the ideal checkpoints.'),
 		)
 
 		# Register settings
@@ -159,6 +161,10 @@ class TrackmaniaComponent:
 
 	async def chat_score_progression(self, player, **kwargs):
 		view = StatsScoresListView(self.app, player)
+		await view.display(player)
+
+	async def open_cp_comparison(self, player, **kwargs):
+		view = CheckpointComparisonView(self.app, player)
 		await view.display(player)
 
 	async def chat_topsums(self, player, *args, **kwargs):

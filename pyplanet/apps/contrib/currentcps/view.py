@@ -23,8 +23,8 @@ class CPWidgetView(TimesWidgetView):
 
 		self.record_amount = 15
 
-	async def get_all_player_data(self, logins):
-		data = await super().get_all_player_data(logins)
+	async def get_player_data(self):
+		data = await super().get_player_data()
 
 		# Calculate the maximum number of rows that can be displayed
 		max_n = math.floor((self.size_y - 5.5) / 3.3)
@@ -69,6 +69,10 @@ class CPWidgetView(TimesWidgetView):
 		data.update(cps)
 
 		return data
+
+	async def get_context_data(self):
+		self.widget_y = 12.5 if self.app.dedimania_enabled else 70.5
+		return await super().get_context_data()
 
 	async def handle_catch_all(self, player, action, values, **kwargs):
 		logging.debug("CatchAll: " + player.login + ": " + action)

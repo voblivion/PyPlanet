@@ -33,8 +33,8 @@ declare Integer HideFrameAt;
 Void UpdateInterface() {
   // Current lap sector time.
   declare CurrentCheckpointTime = 0;
-  if (GUIPlayer != Null) {
-    CurrentCheckpointTime = GUIPlayer.CurCheckpointLapTime;
+  if (GUIPlayer != Null && GUIPlayer.RaceWaypointTimes.existskey(CurrentCheckpoint - 1)) {
+    CurrentCheckpointTime = GUIPlayer.RaceWaypointTimes[CurrentCheckpoint - 1];
   }
   if (CurrentCheckpointTime == -1 && CurrentLapScore > 0) {
     CurrentCheckpointTime = CurrentLapScore;
@@ -111,8 +111,33 @@ Void ShowDiff() {
   HideFrameAt = Now + 2500;
   Sector_CPTime_Frame.Show();
 }
-
+Integer GetCPCount() {
+	declare Integer count;
+	declare Ident[][Integer] orders;
+	
+	foreach(Landmark in MapLandmarks) {
+		if ( (Landmark.Waypoint != Null && (Landmark.Waypoint.IsFinish || Landmark.Waypoint.IsMultiLap)) || Landmark.Tag == "Spawn") {
+			continue;
+		}
+		if(orders.existskey(Landmark.Order)) {
+			orders[Landmark.Order].add(Landmark.MarkerId);
+		}
+		else {
+			orders[Landmark.Order] = [Landmark.MarkerId];
+		}
+	}
+	if(orders.count == 1 && orders.existskey(0)) { // No linked cp in the map
+		count = orders[0].count;
+	}
+	else {
+		count = orders.count;
+	}
+	return count + 1; // +1 for ending
+}
 main() {
+	
+  declare LastCpCount = -1;
+	
   // Set variables
   Sector_CPTime_Frame = (Page.GetFirstChild("cp_time_frame") as CMlFrame);
   Sector_CPTime_Data = (Page.GetFirstChild("cp_time_data") as CMlLabel);
@@ -126,7 +151,7 @@ main() {
   BestCheckpoints = ParseCheckpoints(Sector_CPTime_Data.DataAttributeGet("record-sectors"));
   BestSource = Sector_CPTime_Data.DataAttributeGet("record-source");
 
-  TotalCheckpoints = MapCheckpointPos.count;
+  TotalCheckpoints = GetCPCount();
   CurrentCheckpoint = 0;
 
   HideFrameAt = 0;
@@ -141,51 +166,38 @@ main() {
     if (HideFrameAt != 0 && HideFrameAt <= Now) {
       HideDiff();
     }
-
-    // Check for pending race events.
-    foreach (Event in RaceEvents) {
-      // Stop here if player of the event is not the playing or spectating player.
-      if (GUIPlayer == Null || Event.Player != GUIPlayer) {
-        continue;
-      }
+    if (GUIPlayer != Null){
+      declare wayPointTimesCount = GUIPlayer.RaceWaypointTimes.count;
       declare Boolean IsSpectating = GUIPlayer != InputPlayer;
-
-      // If the player itself finished faster. Set the new time as PB.
-      if (! IsSpectating && Event.IsEndLap && (BestScore <= 0 || Event.LapTime < BestScore)) {
-        BestScore = Event.LapTime;
-        BestSource = "PB";
-        BestCheckpoints = CurrentCheckpointScores;
-      }
-
-      if (Event.Type == CTmRaceClientEvent::EType::Respawn) {
-        if (GUIPlayer != Null && GUIPlayer.RaceState != CTmMlPlayer::ERaceState::Running) {
-          HideDiff();
-
+	  //New cp or reset
+      if (LastCpCount != wayPointTimesCount) {
+		//reset
+        if (wayPointTimesCount == 0){
           CurrentCheckpointScores = Integer[];
           CurrentCheckpoint = 0;
           UpdateInterface();
+          HideDiff();
+        } else { //new cp
+          if (GUIPlayer.StartTime >= 0) {
+            CurrentCheckpoint = wayPointTimesCount;
+            CurrentCheckpointScores.add(GUIPlayer.RaceWaypointTimes[wayPointTimesCount - 1]);
+			ShowDiff();
+            UpdateInterface();
+			
+			
+			
+            if (CurrentCheckpoint >= TotalCheckpoints) { // end of lap (TODO handle multilap)
+              CurrentCheckpoint = 0;
+              if (! IsSpectating && (BestScore <= 0 || GUIPlayer.RaceWaypointTimes[wayPointTimesCount - 1] < BestScore) && CurrentCheckpointScores.count == TotalCheckpoints) {
+                BestScore = GUIPlayer.RaceWaypointTimes[wayPointTimesCount - 1];
+                BestSource = "Round";
+                BestCheckpoints = CurrentCheckpointScores;
+              }
+              CurrentCheckpointScores = Integer[];
+            }
+          }
         }
-      }
-
-      if (Event.Type == CTmRaceClientEvent::EType::WayPoint && GUIPlayer != Null) {
-        ShowDiff();
-
-        if (CurrentCheckpoint != TotalCheckpoints) {
-          CurrentCheckpoint = Event.CheckpointInLap + 1;
-          CurrentCheckpointScores.add(GUIPlayer.CurCheckpointLapTime);
-        }
-
-        if (Event.IsEndLap) {
-          CurrentCheckpoint = TotalCheckpoints + 1;
-          CurrentLapScore = Event.LapTime;
-        }
-
-        UpdateInterface();
-
-        if (Event.IsEndLap) {
-          CurrentCheckpointScores = Integer[];
-          CurrentCheckpoint = 0;
-        }
+        LastCpCount = wayPointTimesCount;
       }
     }
     yield;
