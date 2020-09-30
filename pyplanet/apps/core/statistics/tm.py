@@ -3,8 +3,7 @@ Trackmania app component.
 """
 import logging
 import math
-import datetime
-from peewee import fn
+from peewee import fn, RawQuery
 
 from pyplanet.apps.core.maniaplanet.models import Player
 from pyplanet.apps.core.statistics.models import Score, Rank
@@ -16,8 +15,6 @@ from pyplanet.apps.core.trackmania.callbacks import finish
 from pyplanet.apps.core.maniaplanet.callbacks import map
 from pyplanet.contrib.command import Command
 from pyplanet.contrib.setting import Setting
-
-from pyplanet.apps.contrib.local_records import LocalRecord
 
 logger = logging.getLogger(__name__)
 
@@ -94,66 +91,58 @@ class TrackmaniaComponent:
 				await self.display_player_rank(player)
 
 	async def calculate_server_ranks(self):
-		# Save calculation start time.
-		start_time = datetime.datetime.now()
+		maps_on_server = [map_on_server.id for map_on_server in self.app.instance.map_manager.maps]
 
-		# Truncate the ranking table.
-		await Rank.execute(Rank.delete())
-
-		# Rankings depend on the local records.
-		if 'local_records' not in self.app.instance.apps.apps:
-			return
-
-		# Retrieve settings.
 		minimum_records_required_setting = await self.setting_records_required.get_value()
 		minimum_records_required = minimum_records_required_setting if minimum_records_required_setting >= 3 else 3
 		maximum_record_rank = await self.app.instance.apps.apps['local_records'].setting_record_limit.get_value()
 
-		# Retrieve all players eligible for a ranking (min. 3 records).
-		eligible_players = await LocalRecord.execute(
-			LocalRecord.select(LocalRecord.player, fn.Count(LocalRecord.id))
-			.group_by(LocalRecord.player)
-			.where(LocalRecord.map << [map_on_server.id for map_on_server in self.app.instance.map_manager.maps])
-			.having(fn.Count(LocalRecord.id) > minimum_records_required))
+		query = RawQuery(Rank, """
+-- Reset the current ranks to insert new ones later one.
+TRUNCATE TABLE stats_ranks;
 
-		if len(eligible_players) == 0:
-			return
+-- Limit on maximum ranked records.
+SET @ranked_record_limit = {};
+-- Minimum amount of ranked records required to acquire a rank.
+SET @minimum_ranked_records = {};
+-- Total amount of maps active on the server.
+SET @active_map_count = {};
 
-		# Retrieve count of maps on server and initialize player record ranks array.
-		server_map_count = len(self.app.instance.map_manager.maps)
-		player_record_ranks = dict([(eligible_player.player_id, list()) for eligible_player in eligible_players])
-		eligible_players_ids = [eligible_player.player_id for eligible_player in eligible_players]
+-- Set the rank/current rank variables to ensure correct first calculation
+SET @rank = 0;
+SET @current_rank = 0;
 
-		# Loop through all maps to determine the personal ranks on each map.
-		for map_on_server in self.app.instance.map_manager.maps:
-			map_records = list(await LocalRecord.execute(
-				LocalRecord.select(LocalRecord.map, LocalRecord.player, LocalRecord.score)
-					.where(LocalRecord.map_id == map_on_server.id)
-					.order_by(LocalRecord.map_id.asc(), LocalRecord.score.asc())
-					.limit(maximum_record_rank)
-			))
+INSERT INTO stats_ranks (player_id, average, calculated_at)
+SELECT
+	player_id, average, calculated_at
+FROM (
+	SELECT
+		player_id,
+		-- Calculation: the sum of the record ranks is combined with the ranked record limit times the amount of unranked maps.
+		-- Divide this summed ranking by the amount of active maps on the server, and an average calculated rank will be returned.
+		ROUND((SUM(rank) + (@active_map_count - COUNT(rank)) * @ranked_record_limit) / @active_map_count * 10000, 0) AS average,
+		NOW() AS calculated_at,
+		COUNT(rank) AS ranked_records_count
+	FROM
+	(
+		SELECT
+			id,
+			map_id,
+			player_id,
+			score,
+			@rank := IF(@current_rank = map_id, @rank + 1, 1) AS rank,
+		   @current_rank := map_id
+		FROM localrecord
+		WHERE map_id IN ({})
+		ORDER BY map_id, score ASC
+	) AS ranked_records
+	WHERE rank <= @ranked_record_limit
+	GROUP BY player_id
+) grouped_ranks
+WHERE ranked_records_count >= @minimum_ranked_records
+		""".format(maximum_record_rank, minimum_records_required, str(len(maps_on_server)), ", ".join(str(map_id) for map_id in maps_on_server)))
 
-			for map_record in [eligible_record for eligible_record in map_records if (eligible_record.player_id in eligible_players_ids)]:
-				map_player_rank = (map_records.index(map_record) + 1)
-				if map_player_rank <= maximum_record_rank:
-					player_record_ranks[map_record.player_id].append(map_player_rank)
-
-		calculated_ranks = []
-
-		# Determine ranking average and submit rankings to the database.
-		for player_id in player_record_ranks:
-			player_ranked_records = len(player_record_ranks[player_id])
-			player_average_rank = (sum(player_record_ranks[player_id]) + ((server_map_count - player_ranked_records) * maximum_record_rank)) / server_map_count
-			player_average_rank = round(player_average_rank * 10000)
-
-			calculated_ranks.append({
-				'player': player_id,
-				'average': player_average_rank
-			})
-
-		await Rank.execute(Rank.insert_many(calculated_ranks))
-
-		logger.info('[RANKING] Total time elapsed: {}ms'.format((datetime.datetime.now() - start_time).total_seconds() * 1000))
+		await Rank.execute(query)
 
 	async def open_stats(self, player, **kwargs):
 		view = StatsDashboardView(self.app, self.app.context.ui, player)
