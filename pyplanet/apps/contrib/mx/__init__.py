@@ -7,7 +7,9 @@ from pyplanet.apps.contrib.mx.exceptions import MXMapNotFound, MXInvalidResponse
 from pyplanet.apps.contrib.mx.view import MxSearchListView, MxPacksListView, MxStatusListView
 from pyplanet.contrib.command import Command
 from pyplanet.contrib.setting import Setting
+from pyplanet.contrib.map.exceptions import MapNotFound
 from collections import namedtuple
+
 
 from pyplanet.utils import gbxparser
 from pyplanet.utils.string import ExtendedFormatter
@@ -21,12 +23,17 @@ class CommandAddMxMapCallbacks:
 		self.site_short_name = site_short_name
 		self.juke_maps = juke_maps
 
-	async def add(self, mx_info):
+	async def add(self, mx_info, is_update=False):
+		print(0)
 		if self.juke_maps and 'jukebox' in self.instance.apps.apps:
-			map_instance = await self.instance.map_manager.get_map(uid=mx_info['MapUID'])
-			if map_instance:
-				self.instance.apps.apps['jukebox'].insert_map(self.player, map_instance)
-
+			print(mx_info['MapUID'])
+			try:
+				map_instance = await self.instance.map_manager.get_map(uid=mx_info['MapUID'])
+				if map_instance:
+					self.instance.apps.apps['jukebox'].insert_map(self.player, map_instance)
+			except:
+				print('Something went wrong... but what?')
+		print(1)
 		message = '$ff0Admin $fff{}$z$s$ff0 has added{} the map $fff{}$z$s$ff0 by $fff{}$z$s$ff0 from {}..'
 		juke_text = ' and juked' if self.juke_maps else ''
 		message = message.format(self.player.nickname, juke_text, mx_info['Name'], mx_info['Username'], self.site_short_name)
@@ -53,6 +60,7 @@ class MX(AppConfig):  # pragma: no cover
 		self.namespace = 'mx'
 		self.site_name = 'ManiaExchange'
 		self.site_short_name = 'MX'
+		self.default_filepath_template = os.path.join('PyPlanet-MX', '{game!u}-{MapID}.Map.Gbx')
 
 		self.setting_mx_key = Setting(
 			'mx_key', 'ManiaExchange/TrackmaniaExchange Key', Setting.CAT_KEYS, type=str, default=None,
@@ -109,13 +117,13 @@ class MX(AppConfig):  # pragma: no cover
 				.add_param('pack', nargs='*', type=str, required=True, help='MX/TMX ID(s) of mappacks to add.'),
 		)
 
-	async def add_mx_map(self, mx_ids, filepath_template=None, overwrite=False, juke_maps=False,
-		player=None, add_callback=lambda *args:None, error_callback=lambda *args:None):
+	async def add_mx_map(self, mx_ids, filepath_template=None, overwrite=False,
+		on_add=lambda *args:None, on_error=lambda *args:None):
 		"""
 		Downloads and adds an mx map to the server.
 		"""
 		if filepath_template is None:
-			filepath_template = os.path.join('PyPlanet-MX', '{game!u}-{MapID}.Map.Gbx')
+			filepath_template = self.default_filepath_template
 
 		# Make sure we update the key in the api.
 		self.api.key = await self.setting_mx_key.get_value()
@@ -124,22 +132,29 @@ class MX(AppConfig):  # pragma: no cover
 		added_map_uids = []
 		for mx_id, mx_info in infos:
 			if 'Name' not in mx_info:
-				await error_callback(mx_id, None, 'Map not found')
+				await on_error(mx_id, None, 'Map not found.')
 				continue
 
 			filepath = ExtendedFormatter().format(filepath_template, game=self.instance.game.game, **mx_info)
 			folderpath = os.path.dirname(filepath)
 			try:
 				if not await self.instance.storage.exists_map(folderpath):
-					self.instance.storage.mkdir_map(folderpath)
+					await self.instance.storage.mkdir_map(folderpath)
 			except Exception as e:
-				await error_callback(mx_id, mx_info, 'Can\'t check or create folder: {}'.format(e))
+				await on_error(mx_id, mx_info, 'Can\'t check or create folder {}.'.format(e))
 				continue
 
 			# Test if map isn't yet in our current map list
-			if not overwrite and self.instance.map_manager.playlist_has_map(mx_info['MapUID']):
-				await error_callback(mx_id, mx_info, 'Map already in playlist! Update? remove it first!')
-				continue
+			try:
+				map_instance = await self.instance.map_manager.get_map(uid=mx_info['MapUID'])
+				if not overwrite:
+					await on_error(mx_id, mx_info, 'Map already in playlist! Update? remove it first!')
+					continue
+				else:
+					await self.instance.map_manager.remove_map(map_instance, delete_file=True)
+					await self.instance.map_manager.update_list(full_update=True)
+			except MapNotFound:
+				pass
 
 			# Download file + save
 			resp = await self.api.download(mx_id)
@@ -150,11 +165,11 @@ class MX(AppConfig):  # pragma: no cover
 			# Add map to server
 			result = await self.instance.map_manager.add_map(filepath)
 			if not result:
-				await error_callback(mx_id, mx_info, 'Unknown error while adding the map.')
+				await on_error(mx_id, mx_info, 'Unknown error while adding the map.')
 				continue
+			print(mx_info)
 			await self.instance.map_manager.update_list(full_update=True)
-
-			await add_callback(mx_info)
+			await on_add(mx_info)
 			added_map_uids.append(mx_info['MapUID'])
 
 		return [await self.instance.map_manager.get_map(uid=added_uid) for added_uid in added_map_uids]
@@ -258,9 +273,11 @@ class MX(AppConfig):  # pragma: no cover
 		try:
 			callbacks = CommandAddMxMapCallbacks(self.instance, player, self.site_short_name, juke_maps)
 			return await self.add_mx_map(data.maps, overwrite=True,
-				add_callback=callbacks.add, error_callback=callbacks.error)
+				on_add=callbacks.add, on_error=callbacks.error)
 		except MXInvalidResponse as e:
 			message = '$f00Error: Got invalid response from {}: {}'.format(self.site_name, str(e))
 			await self.instance.chat(message, player.login)
+
+
 
 

@@ -100,6 +100,7 @@ class Instance:
 		"""
 		Start wrapper.
 		"""
+		print('yolo')
 		try:
 			# Start memleak checker.
 			memleak.checker.start()

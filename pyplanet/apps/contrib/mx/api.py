@@ -167,7 +167,6 @@ class MXApi:
 			raise MXInvalidResponse('Got invalid response status from ManiaExchange: {}'.format(response.status))
 		record = list()
 		for info in await response.json():
-			print(info)
 			record.append((info))
 		return record
 	
@@ -240,6 +239,13 @@ class MXApi:
 			return maps
 		else:
 			raise MXMapNotFound("Mx returned with empty response.")
+
+	async def list_tags(self):
+		url = '{base}/tags/gettags'.format(base=self.base_url(True))
+		response = await self.session.get(url)
+		if not (200 <= response.status < 400):
+			raise MXInvalidResponse('Got invalid response status from ManiaExchange: {}'.format(response.status))
+		return response.json()
 
 	async def download(self, mx_id):
 		url = '{base}/maps/download/{id}'.format(
