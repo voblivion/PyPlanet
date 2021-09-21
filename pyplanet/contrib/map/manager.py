@@ -12,7 +12,6 @@ from pyplanet.conf import settings
 from pyplanet.contrib import CoreContrib
 from pyplanet.contrib.map.exceptions import MapNotFound, MapException, ModeIncompatible
 from pyplanet.core.exceptions import ImproperlyConfigured
-from . import callbacks as map_manager_signals
 
 
 class MapManager(CoreContrib):
@@ -206,9 +205,6 @@ class MapManager(CoreContrib):
 						)
 						self._maps.add(map_instance)
 						updated.append(map_instance)
-
-		# Signal listeners map list has been updated
-		await map_manager_signals.list_updated.send_robust(source={})
 		
 		return updated
 
@@ -424,9 +420,6 @@ class MapManager(CoreContrib):
 				await self._instance.storage.remove_map(map)
 			except:
 				raise MapException('Can\'t delete map file after removing from playlist.')
-
-		# Signal listeners map list has been updated
-		await map_manager_signals.list_updated.send_robust(source={})
 
 	async def _override_timelimit(self, filename):
 		"""

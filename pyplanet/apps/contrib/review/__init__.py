@@ -6,7 +6,6 @@ from pyplanet.apps.config import AppConfig
 from pyplanet.apps.contrib.karma import callbacks as karma_signals
 from pyplanet.apps.core.maniaplanet import callbacks as mp_signals
 from pyplanet.contrib.command import Command
-from pyplanet.contrib.map import callbacks as map_manager_signals
 from pyplanet.contrib.setting import Setting
 from pyplanet.utils.relativedelta import read_relativedelta
 
@@ -176,8 +175,8 @@ class ReviewApp(AppConfig):
 		await self.widget.display()
 		
 		self.context.signals.listen(karma_signals.vote_changed, self.update_widget)
-		self.context.signals.listen(map_manager_signals.list_updated, self.update_widget)
 		self.context.signals.listen(mp_signals.player.player_connect, self.player_connect)
+		self.instance.signals.listen('maniaplanet:playlist_modified', self.update_widget)
 		
 		self._karma = self.instance.apps.apps['karma']
 		self._mx = self.instance.apps.apps['mx']
