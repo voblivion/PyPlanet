@@ -1,23 +1,17 @@
 import os
 import io
 from datetime import datetime
-from dateutil.relativedelta import relativedelta
 
 from pyplanet.apps.config import AppConfig
+from pyplanet.apps.contrib.karma import callbacks as karma_signals
 from pyplanet.contrib.command import Command
+from pyplanet.contrib.map import callbacks as map_manager_signals
 from pyplanet.contrib.setting import Setting
 from pyplanet.utils.relativedelta import read_relativedelta
 
+from .views import ReviewWidget, ReviewListWindow, ReviewAddWindow
 from .models import MapReview as MapReviewModel
-
-def to_python_time(tmx_time):
-	try:
-		return datetime.strptime(tmx_time, '%Y-%m-%dT%H:%M:%S.%f')
-	except:
-		return datetime.strptime(tmx_time, '%Y-%m-%dT%H:%M:%S')
-
-class MapReviewAddException(Exception):
-	pass
+from .utils import to_python_time, hsv_to_rgb, rgb_to_hex, MapReviewAddException
 
 class AddMapForReviewCallback:
 	def __init__(self, instance, player):
@@ -28,8 +22,11 @@ class AddMapForReviewCallback:
 		updated_at = to_python_time(mx_info['UpdatedAt'])
 		return await MapReviewModel.get_or_none(
 			MapReviewModel.mx_id == mx_info['MapID'], MapReviewModel.updated_at == updated_at) is not None
-			
-
+	
+	async def overwrite(self, mx_info, map_instance):
+		map_review = await MapReviewModel.get_or_none(MapReviewModel.mx_id == mx_info['MapID'])
+		return map_review is not None
+	
 	async def add(self, mx_info):
 		try:
 			map_instance = await self.instance.map_manager.get_map(uid=mx_info['MapUID'])
@@ -47,20 +44,32 @@ class AddMapForReviewCallback:
 				map_review.updated_at = updated_at
 			await map_review.save()
 		except:
-			message = '$ff0Something went wrong adding $fff{}$z$s$ff0 by $fff{}$z$s$ff0.'.format(mx_info['Name'], mx_info['Username'])
-			await self.instance.chat(message, self.player)
+			message = '$ff0Something went wrong adding $fff{}$z$s$ff0 by $fff{}$z$s$ff0.'
+			await self.instance.chat(message.format(mx_info['Name'], mx_info['Username']), self.player)
 
-	async def error(self, mx_id, mx_info, error_message):
-		if mx_info is not None:
-			warning = 'Error when player {} was adding map for review: {}'
-			logger.warning(warning.format(self.player.login, error_message))
-
+	async def error(self, mx_id, mx_info, reason):
 		map_identifier = mx_info['Name'] if mx_info else mx_id
-		await self.instance.chat('$ff0Error: Can\'t add map {} for review. Reason: {}'.format(map_identifier, error_message),
-			self.player.login)
+		msg = ''
+		if reason == 'NOT_FOUND':
+			msg = 'Map not found.'
+		elif reason == 'UNKNOWN':
+			warning = 'Error when player {} was adding map {} for review: {}'
+			logger.warning(warning.format(self.player.login, map_identifier, msg))
+			msg = 'Unknown error while adding the map.'
+		elif reason == 'DIRECTORY':
+			warning = 'Error when player {} was adding map {} for review: {}'
+			logger.warning(warning.format(self.player.login, map_identifier, msg))
+			msg = 'Cannot check or create map folder.'
+		elif reason == 'OVERWRITE':
+			msg = 'already on server outside of review process';
+			await self.instance.chat('$f00Map cannot be added for review: {}.'.format(msg), self.player.login)
+			return
+		
+		message = '$ff0Error while adding {} for review. Reason: {}'
+		await self.instance.chat(message.format(map_identifier, msg), self.player.login)
 
-class MapReviewApp(AppConfig):
-	name = 'pyplanet.services.contrib.map_review'
+class ReviewApp(AppConfig):
+	name = 'pyplanet.services.contrib.review'
 	namespace = 'review'
 	app_dependencies = ['karma', 'mx', 'jukebox']
 	
@@ -131,6 +140,7 @@ class MapReviewApp(AppConfig):
 	)
 	
 	async def on_start(self):
+		await super().on_start()
 		await self.instance.permission_manager.register(
 			'add_remote', 'Add map from remote source (such as MX)', app=self, min_level=2)
 		
@@ -147,17 +157,34 @@ class MapReviewApp(AppConfig):
 		await self.context.setting.register(self.setting_search_desired_result_count)
 		
 		await self.instance.command_manager.register(
-			Command(command='add', namespace=self.namespace, target=self.command_add_map_for_review,
-				description='Adds a MX map to review.')
+			Command(command='add', namespace=self.namespace, 
+				target=self.command_add_map_for_review, description='Adds a MX map to review.')
 			.add_param('mx_id', type=int, required=True, help='MX map id'),
 			
-			Command(command='remove', namespace=self.namespace, target=self.command_remove_map_from_review,
-				description='Removes a MX map from review.')
-			.add_param('mx_id', type=int, required=True, help='MX map id')
+			Command(command='remove', namespace=self.namespace, admin=True,
+				target=self.command_remove_map_from_review, description='Removes a MX map from review.')
+			.add_param('mx_id', type=int, required=True, help='MX map id'),
+			
+			Command(command='reset', namespace=self.namespace, admin=True,
+				target=self.command_reset_map_review_state, description='Reset a MX map review state.')
+			.add_param('mx_id', type=int, required=True, help='MX map id'),
+			
 		)
+		
+		self.widget = ReviewWidget(self)
+		await self.widget.display()
+		
+		self.context.signals.listen(karma_signals.vote_changed, self.update_widget)
+		self.context.signals.listen(map_manager_signals.list_updated, self.update_widget)
 		
 		self._karma = self.instance.apps.apps['karma']
 		self._mx = self.instance.apps.apps['mx']
+	
+	async def map_begin(self, map):
+		await self.widget.display()
+	
+	async def player_connect(self, player, is_spectator, source, signal):
+		await self.widget.display(player=player)
 	
 	async def map_end(self, map):
 		await self.try_auto_remove_map_from_review(map)
@@ -166,26 +193,70 @@ class MapReviewApp(AppConfig):
 		if self.can_auto_remove_from_review(map):
 			await self.instance.map_manager.remove_map(map, delete_file=True)
 	
+	async def update_widget(self, *args, **kwargs):
+		await self.widget.display()
+	
+	async def show_list_window(self, player):
+		view = ReviewListWindow(self, player)
+		await view.display(player=player)
+	
+	async def show_add_window(self, player):
+		view = ReviewAddWindow(self, player)
+		await view.display(player=player)
+	
+	async def get_map_scores(self):
+		map_scores = []
+		for map in self.instance.map_manager.maps:
+			karma = await self.instance.apps.apps['karma'].get_map_karma(map)
+			score = int((1+karma['map_karma'])*50 / karma['vote_count'] if karma['vote_count'] > 0 else 0)
+			
+			h = 120.0 * (score if score > 0 else 0) / 100
+			s = 1
+			v = 1
+			
+			info = await self.instance.gbx('GetMapInfo', map.file)
+			color = rgb_to_hex(*hsv_to_rgb(h, s, v)) + '60'
+			map_scores.append({
+				'map_name': map.name,
+				'author_login': map.author_login,
+				'score': score,
+				'color': color
+			})
+		map_scores.sort(key=lambda map_score: map_score['score'], reverse=True)
+		return map_scores
+	
 	async def search_maps(self, map_name=None, author_name=None):
 		# Prepare mandatory tags to pre-filter with
-		tags = await self._mx.api.list_tags()
+		tags = await (await self._mx.api.list_tags())
 		mandatory_tag_names = (await self.setting_add_mandatory_tag_names.get_value()).split(',')
+		mandatory_tag_names = [tag_name.strip() for tag_name in mandatory_tag_names]
 		mandatory_tag_ids = [str(tag['ID']) for tag in tags if tag['Name'] in mandatory_tag_names]
 		
 		max_page = await self.setting_search_max_page.get_value()
 		desired_result_count = await self.setting_search_desired_result_count.get_value()
-		
 		page = 0
 		mx_infos = []
+		
+		options = {
+			'api': 'on',
+			'tagsinc': 1,
+			'priord': 4,
+			'limit': 100,
+		}
+		
+		if len(mandatory_tag_ids) > 0:
+			options['tags'] = ','.join(mandatory_tag_ids)
+		if map_name:
+			options['trackname'] = map_name
+		if author_name:
+			options['anyauthor'] = author_name
+		
 		while page < max_page and len(mx_infos) < desired_result_count:
 			page += 1
-			options = {
-				'tags': ','.join(mandatory_tag_ids),
-				'tagsinc': 1,
-				'priord': 4,
-				'limit': 100,
-				'page': page
-			}
+			options['page'] = page
+			
+			
+			
 			results = await self._mx.api.search(options)
 			for mx_info in results:
 				if await self.can_add_map_for_review(mx_info['TrackID'], mx_info=mx_info, tags=tags):
@@ -196,7 +267,6 @@ class MapReviewApp(AppConfig):
 		return mx_infos
 	
 	async def can_auto_remove_from_review(self, map):
-		# TODO MapReviewModel
 		map_review = await MapReviewModel.get_or_none(MapReviewModel.map == map.get_id())
 		if map_review is None:
 			# This map was not added through the review app so it won't be removed
@@ -248,7 +318,6 @@ class MapReviewApp(AppConfig):
 		server_maps = self.instance.map_manager.maps
 		if not map_review and next((map.uid for map in server_maps if map.uid == mx_info['MapUID']), None):
 			raise MapReviewAddException('already on server outside of review process')
-		print([map.uid for map in self.instance.map_manager.maps], mx_info['MapUID'])
 		
 		# Mandatory Tags
 		mandatory_tag_names = (await self.setting_add_mandatory_tag_names.get_value()).split(',')
@@ -288,7 +357,7 @@ class MapReviewApp(AppConfig):
 	
 	async def can_add_map_for_review(self, mx_id, mx_info=None, tags=None):
 		try:
-			await validate_add_requirements(self, mx_id, mx_info, tags)
+			await self.validate_add_requirements(mx_id, mx_info, tags)
 		except MapReviewAddException:
 			return False
 		return True
@@ -299,10 +368,21 @@ class MapReviewApp(AppConfig):
 	async def command_remove_map_from_review(self, player, data, **kwargs):
 		await self.request_remove_map_from_review(player, data.mx_id)
 	
+	async def command_reset_map_review_state(self, player, data, **kwargs):
+		await self.request_reset_map_review_state(player, data.mx_id)
+	
+	async def request_reset_map_review_state(self, player, mx_id):
+		try:
+			map_review = await MapReviewModel.get(MapReviewModel.mx_id == mx_id)
+			await map_review.destroy()
+			await self.instance.chat('$ff0Map review state has been reset.', player.login)
+		except:
+			await self.instance.chat('$f00Map not in review.', player.login)
+	
 	async def request_add_map_for_review(self, player, mx_id):
+		callbacks = AddMapForReviewCallback(self.instance, player)
 		try:
 			await self.validate_add_requirements(mx_id)
-			callbacks = AddMapForReviewCallback(self.instance, player)
 			filepath_template = await self.setting_filepath_template.get_value()
 			await self._mx.add_mx_map([mx_id], filepath_template=filepath_template, overwrite=True,
 				on_add=callbacks.add, on_error=callbacks.error)
@@ -310,12 +390,15 @@ class MapReviewApp(AppConfig):
 			await self.instance.chat('$f00Map cannot be added for review: {}.'.format(e), player.login)
 
 	async def request_remove_map_from_review(self, player, mx_id):
-		map_review = await MapReviewModel.get_or_none(MapReviewModel.mx_id == mx_id)
-		if map_review is not None:
-			await self.instance.map_manager.remove_map(await map_review.map, delete_file=True)
-			await map_review.destroy()
-		else:
-			print('Map Not In Review')
+		try:
+			map_review = await MapReviewModel.get(MapReviewModel.mx_id == mx_id)
+			try:
+				await self.instance.map_manager.remove_map(await map_review.map, delete_file=True)
+			except Exception as e:
+				pass
+			await self.instance.chat('$ff0Map has been removed from review.', player.login)
+		except:
+			await self.instance.chat('$f00Map not in review.', player.login)
 
 
 

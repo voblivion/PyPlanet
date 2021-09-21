@@ -12,6 +12,7 @@ from pyplanet.apps.contrib.karma.views import KarmaWidget
 from pyplanet.apps.contrib.karma.mxkarma import MXKarma
 
 from .models import Karma as KarmaModel
+from . import callbacks as karma_signals
 
 
 class Karma(AppConfig):
@@ -164,6 +165,7 @@ class Karma(AppConfig):
 					score = -0.5
 
 				player_votes = [x for x in self.current_votes if x.player_id == player.get_id()]
+				changed_vote = None
 				if len(player_votes) > 0:
 					player_vote = player_votes[0]
 					if (player_vote.expanded_score is not None and player_vote.expanded_score != score) or \
@@ -171,7 +173,7 @@ class Karma(AppConfig):
 						player_vote.score = normal_score
 						player_vote.expanded_score = score
 						await player_vote.save()
-
+						
 						map = next((m for m in self.instance.map_manager.maps if m.uid == self.instance.map_manager.current_map.uid), None)
 						if map is not None:
 							map.karma = await self.get_map_karma(self.instance.map_manager.current_map)
@@ -184,6 +186,7 @@ class Karma(AppConfig):
 							self.instance.chat(message, player),
 							self.widget.display()
 						)
+						changed_vote = player_vote
 					else:
 						message = '$ff0You have already voted $fff{}$ff0 on this map!'.format(text)
 						await self.instance.chat(message, player)
@@ -205,9 +208,14 @@ class Karma(AppConfig):
 						self.instance.chat(message, player),
 						self.widget.display()
 					)
-
-				# Reload map referenced information
-				asyncio.ensure_future(self.load_map_votes(map=self.instance.map_manager.current_map))
+					changed_vote = new_vote
+				
+				if changed_vote is not None:
+					await karma_signals.vote_changed.send_robust(source=dict(
+						vote=changed_vote
+					))
+					# Reload map referenced information
+					asyncio.ensure_future(self.load_map_votes(map=self.instance.map_manager.current_map))
 
 	async def get_map_karma(self, map):
 		vote_list = await KarmaModel.objects.execute(KarmaModel.select().where(KarmaModel.map_id == map.get_id()))

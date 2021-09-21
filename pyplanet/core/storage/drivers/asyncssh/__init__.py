@@ -155,5 +155,9 @@ class SFTPDriver(StorageDriver):
 			async with sftp.open(self.absolute(path), 'w+') as fh:
 				await fh.write('')
 
+	async def replace(self, oldpath: str, newpath: str)
+		async with self.connect_sftp() as sftp:
+			return await sftp.posix_rename(oldpath, newpath)
+
 	def openable(self):
 		return True

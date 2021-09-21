@@ -24,28 +24,33 @@ class CommandAddMxMapCallbacks:
 		self.juke_maps = juke_maps
 
 	async def add(self, mx_info, is_update=False):
-		print(0)
 		if self.juke_maps and 'jukebox' in self.instance.apps.apps:
-			print(mx_info['MapUID'])
-			try:
-				map_instance = await self.instance.map_manager.get_map(uid=mx_info['MapUID'])
-				if map_instance:
-					self.instance.apps.apps['jukebox'].insert_map(self.player, map_instance)
-			except:
-				print('Something went wrong... but what?')
-		print(1)
+			map_instance = await self.instance.map_manager.get_map(uid=mx_info['MapUID'])
+			if map_instance:
+				self.instance.apps.apps['jukebox'].insert_map(self.player, map_instance)
 		message = '$ff0Admin $fff{}$z$s$ff0 has added{} the map $fff{}$z$s$ff0 by $fff{}$z$s$ff0 from {}..'
 		juke_text = ' and juked' if self.juke_maps else ''
-		message = message.format(self.player.nickname, juke_text, mx_info['Name'], mx_info['Username'], self.site_short_name)
+		message = message.format(self.player.nickname, juke_text, mx_info['Name'], mx_info['Username'],
+			self.site_short_name)
 		await self.instance.chat(message)
 
-	async def error(self, mx_id, mx_info, error_message):
+	async def error(self, mx_id, mx_info, reason):
+		msg = ''
+		if reason == 'NOT_FOUND':
+			msg = 'Map not found.'
+		elif reason == 'UNKNOWN':
+			msg = 'Unknown error while adding the map.'
+		elif reason == 'DIRECTORY':
+			msg = 'Cannot check or create map folder.'
+		elif reason == 'OVERWRITE':
+			msg = 'Map already in playlist! Update? remove it first!'
+		
 		if mx_info is not None:
 			warning = 'Error when player {} was adding map from {}: {}'
-			logger.warning(warning.format(self.player.login, self.site_short_name, error_message))
+			logger.warning(warning.format(self.player.login, self.site_short_name, msg))
 
 		map_identifier = mx_info['Name'] if mx_info else mx_id
-		await self.instance.chat('$ff0Error: Can\'t add map {}. Reason: {}'.format(map_identifier, error_message),
+		await self.instance.chat('$ff0Error: Can\'t add map {}. Reason: {}'.format(map_identifier, msg),
 			self.player.login)
 
 class MX(AppConfig):  # pragma: no cover
@@ -117,7 +122,20 @@ class MX(AppConfig):  # pragma: no cover
 				.add_param('pack', nargs='*', type=str, required=True, help='MX/TMX ID(s) of mappacks to add.'),
 		)
 
-	async def add_mx_map(self, mx_ids, filepath_template=None, overwrite=False,
+	async def _add_mx_map_check_overwrite(self, mx_info, overwrite, on_error):
+		try:
+			map_instance = await self.instance.map_manager.get_map(uid=mx_info['MapUID'])
+			if not await overwrite(mx_info, map_instance):
+				await on_error(mx_info['MapID'], mx_info, 'OVERWRITE')
+				return False
+			else:
+				await self.instance.map_manager.remove_map(map_instance, delete_file=True)
+				await self.instance.map_manager.update_list(full_update=True)
+		except:
+			pass
+		return True
+
+	async def add_mx_map(self, mx_ids, filepath_template=None, overwrite=lambda *args:False,
 		on_add=lambda *args:None, on_error=lambda *args:None):
 		"""
 		Downloads and adds an mx map to the server.
@@ -129,45 +147,51 @@ class MX(AppConfig):  # pragma: no cover
 		self.api.key = await self.setting_mx_key.get_value()
 		infos = await self.api.map_info(*mx_ids)
 
+		# Create folder where to temporarily store downloaded map for info checking
+		tmp_filepath = 'tmp/MX-Download.Map.Gbx'
+		if not await self.instance.storage.exists_map(os.path.dirname(tmp_filepath)):
+			await self.instance.storage.mkdir_map(os.path.dirname(tmp_filepath))
+		
 		added_map_uids = []
 		for mx_id, mx_info in infos:
 			if 'Name' not in mx_info:
-				await on_error(mx_id, None, 'Map not found.')
-				continue
-
-			filepath = ExtendedFormatter().format(filepath_template, game=self.instance.game.game, **mx_info)
-			folderpath = os.path.dirname(filepath)
-			try:
-				if not await self.instance.storage.exists_map(folderpath):
-					await self.instance.storage.mkdir_map(folderpath)
-			except Exception as e:
-				await on_error(mx_id, mx_info, 'Can\'t check or create folder {}.'.format(e))
+				await on_error(mx_id, None, 'NOT_FOUND')
 				continue
 
 			# Test if map isn't yet in our current map list
-			try:
-				map_instance = await self.instance.map_manager.get_map(uid=mx_info['MapUID'])
-				if not overwrite:
-					await on_error(mx_id, mx_info, 'Map already in playlist! Update? remove it first!')
-					continue
-				else:
-					await self.instance.map_manager.remove_map(map_instance, delete_file=True)
-					await self.instance.map_manager.update_list(full_update=True)
-			except MapNotFound:
-				pass
-
-			# Download file + save
+			if not await self._add_mx_map_check_overwrite(mx_info, overwrite, on_error):
+				continue
+			
+			# Download file to temporary path
 			resp = await self.api.download(mx_id)
-			async with self.instance.storage.open_map(filepath, 'wb+') as map_file:
+			async with self.instance.storage.open_map(tmp_filepath, 'wb+') as map_file:
 				await map_file.write(await resp.read())
 				await map_file.close()
+
+			# Retrieve exact info from Gbx as MX info could be wrong
+			gbx_info = await self.instance.gbx('GetMapInfo', tmp_filepath)
+			mx_info['MapUID'] = gbx_info['UId']
+			
+			# Test again that map isn't yet in our current map list
+			if not await self._add_mx_map_check_overwrite(mx_info, overwrite, on_error):
+				continue
+
+			# Move file from temporary path to user defined path
+			filepath = ExtendedFormatter().format(filepath_template, game=self.instance.game.game, **mx_info)
+			try:
+				if not await self.instance.storage.exists_map(os.path.dirname(filepath)):
+					await self.instance.storage.mkdir_map(os.path.dirname(filepath))
+			except Exception as e:
+				await on_error(mx_id, mx_info, 'DIRECTORY')
+				continue
+			await self.instance.storage.replace_map(tmp_filepath, filepath)
 
 			# Add map to server
 			result = await self.instance.map_manager.add_map(filepath)
 			if not result:
-				await on_error(mx_id, mx_info, 'Unknown error while adding the map.')
+				await on_error(mx_id, mx_info, 'UNKNOWN')
 				continue
-			print(mx_info)
+			
 			await self.instance.map_manager.update_list(full_update=True)
 			await on_add(mx_info)
 			added_map_uids.append(mx_info['MapUID'])

@@ -67,6 +67,9 @@
             {% if field.manialink %}
               {{ field.manialink|safe }}
             {% else %}
+			  {% if field.bgcolor %}
+			  <quad pos="{{ field.left }} 0" size="{{ field.width }} 5" z-index="-10" bgcolor="{{ bgcolor_renderer(row, field) }}"/>
+			  {% endif %}
               {% if field.action %}
                 <{% if field.input %}entry{% else %}label{% endif %} pos="{{ field.left }} -2.5" size="{{ field.width }} 5"
                        textsize="1.2" valign="center2" action="{{ id }}__list_body_{{ outer_loop.index0 }}_{{ loop.index0 }}"
@@ -89,6 +92,9 @@
                     class="{{ action.classes|join(' ') }} {% if action.needs_confirm %}needs-confirm{% endif %}"
               />
             {% elif action.type == 'label' %}
+			  {% if action.bgcolor %}
+			  <quad pos="{{ 218 - actions_width + action.left - 0.5 }} 0" size="{{ action.width|default(5, True) }} 5" z-index="-10" bgcolor="{{ bgcolor_renderer(row, action) }}"/>
+			  {% endif %}
               <label pos="{{ 218 - actions_width + action.left + (action.width|default(5, True) / 2) - 0.5 }} -2.5" size="{{ action.width|default(5, True) }} 5"
                      {% if action.style %}style="{{ action.style }}"{% endif %} {% if action.substyle %}substyle="{{ action.substyle }}"{% endif %}
                      {% if action.attrs %}{{ action.attrs|safe }}{% endif %}

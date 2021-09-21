@@ -81,5 +81,8 @@ class LocalDriver(StorageDriver):
 		async with self.open(path, 'w+') as fh:
 			await fh.write('')
 
+	async def replace(self, oldpath, newpath):
+		os.replace(self.absolute(oldpath), self.absolute(newpath))
+
 	def openable(self):
 		return True
