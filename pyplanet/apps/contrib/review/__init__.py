@@ -213,7 +213,7 @@ class ReviewApp(AppConfig):
 				continue
 			
 			karma = await self.instance.apps.apps['karma'].get_map_karma(map)
-			score = int((1+karma['map_karma'])*50 / karma['vote_count'] if karma['vote_count'] > 0 else 0)
+			score = int((1+(karma['map_karma']/karma['vote_count']))*50  if karma['vote_count'] > 0 else 0)
 			
 			h = 120.0 * (score if score > 0 else 0) / 100
 			s = 1
