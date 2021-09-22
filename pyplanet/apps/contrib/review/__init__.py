@@ -230,7 +230,7 @@ class ReviewApp(AppConfig):
 				'color': color,
 				'mx_id': map_review.mx_id
 			})
-		map_scores.sort(key=lambda map_score: map_score['score'], reverse=True)
+		map_scores.sort(key=lambda map_score: map_score['score'] if map_score['score'] is not None else -1, reverse=True)
 		return map_scores
 	
 	async def search_maps(self, map_name=None, author_name=None, check_add_requirements=True):
