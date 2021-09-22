@@ -213,14 +213,15 @@ class ReviewApp(AppConfig):
 				continue
 			
 			karma = await self.instance.apps.apps['karma'].get_map_karma(map)
-			score = int((1+(karma['map_karma']/karma['vote_count']))*50  if karma['vote_count'] > 0 else 0)
+			score = int((1+(karma['map_karma']/karma['vote_count']))*50) if karma['vote_count'] > 0 else None
 			
-			h = 120.0 * (score if score > 0 else 0) / 100
-			s = 1
-			v = 1
+			color = '00000070'
+			if score is not None:
+				h = 120.0 * (score if score > 0 else 0) / 100
+				s = 1
+				v = 1
+				color = rgb_to_hex(*hsv_to_rgb(h, s, v)) + '60'
 			
-			info = await self.instance.gbx('GetMapInfo', map.file)
-			color = rgb_to_hex(*hsv_to_rgb(h, s, v)) + '60'
 			map_scores.append({
 				'map_name': map.name,
 				'author_login': map.author_login,
