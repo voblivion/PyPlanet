@@ -101,13 +101,20 @@ class ReviewListWindow(ManualListView):
 				'searching': False,
 				'width': 24,
 				'type': 'label',
-				'bgcolor': True
+				'bgcolor': True,
+				'renderer': self.score_renderer
 			},
 		]
+	
+	def score_renderer(self, row, field):
+		if row['score'] is not None:
+			return '{}'.format(row['score'])
+		return ''
 	
 	def _bgcolor_renderer(self, row, field):
 		if 'action' in field:
 			return 'FF000060'
+		if 
 		return row['color']
 
 	async def get_context_data(self):
