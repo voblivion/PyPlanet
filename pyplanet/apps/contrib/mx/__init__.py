@@ -148,9 +148,8 @@ class MX(AppConfig):  # pragma: no cover
 		infos = await self.api.map_info(*mx_ids)
 
 		# Create folder where to temporarily store downloaded map for info checking
-		tmp_filepath = 'tmp/MX-Download.Map.Gbx'
-		if not await self.instance.storage.exists_map(os.path.dirname(tmp_filepath)):
-			await self.instance.storage.mkdir_map(os.path.dirname(tmp_filepath))
+		if not await self.instance.storage.exists_map('tmp'):
+			await self.instance.storage.mkdir_map('tmp')
 		
 		added_map_uids = []
 		for mx_id, mx_info in infos:
@@ -163,8 +162,10 @@ class MX(AppConfig):  # pragma: no cover
 				continue
 			
 			# Download file to temporary path
+			# TODO : check that it still retrieves the correct UId when map updated while server running
+			tmp_filepath = 'tmp/TMP-{}.Map.Gbx'.format(mx_id)
 			resp = await self.api.download(mx_id)
-			async with self.instance.storage.open_map(tmp_filepath, 'wb+') as map_file:
+			async with self.instance.storage.open_map(tmp_filepath, 'wb') as map_file:
 				await map_file.write(await resp.read())
 				await map_file.close()
 

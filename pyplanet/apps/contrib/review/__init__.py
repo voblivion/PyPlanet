@@ -82,37 +82,37 @@ class ReviewApp(AppConfig):
 	setting_add_mandatory_tag_names = Setting(
 		'add_mandatory_tags', 'Add - Mandatory Tag Names', Setting.CAT_BEHAVIOUR, type=str,
 		description='Comma-separated list of tag names a map must have to be added for review.',
-		default=''
+		default='RPG'
 	)
 	
 	setting_add_forbidden_tag_names = Setting(
 		'add_forbidden_tags', 'Add - Forbidden Tag Names', Setting.CAT_BEHAVIOUR, type=str,
 		description='Comma-separated list of tag names that are not allowed in a map added for review.',
-		default=''
+		default='Trial'
 	)
 	
 	setting_add_required_recency = Setting(
 		'add_required_recency', 'Add - Required Recency', Setting.CAT_BEHAVIOUR, type=str,
 		description='How recent (per last update) a map must be to be added for review.\n\nEx: "1months 3days".',
-		default='5years'
+		default='3months'
 	)
 	
 	setting_add_min_author_time = Setting(
 		'add_min_author_time', 'Add - Min Author Time', Setting.CAT_BEHAVIOUR, type=float,
 		description='Minimum author time (in seconds) a map must have to be added for review.',
-		default=0.0
+		default=60.0
 	)
 	
 	setting_add_max_author_time = Setting(
 		'add_max_author_time', 'Add - Max Author Time', Setting.CAT_BEHAVIOUR, type=float,
 		description='Maximum author time (in seconds) a map can have to be added for review.',
-		default=10800.0
+		default=21600.0
 	)
 	
 	setting_remove_required_recency = Setting(
 		'remove_required_recency', 'Remove - Required Recency', Setting.CAT_BEHAVIOUR, type=str,
 		description='How old (per last update) a map can be before being removed from review. Leave empty for maps to be automatically removed after being played once.\n\nEx: "1months 3days".',
-		default='5years'
+		default='3months 1week'
 	)
 	
 	setting_remove_required_karma = Setting(
@@ -136,7 +136,7 @@ class ReviewApp(AppConfig):
 	setting_search_desired_result_count = Setting(
 		'search_desired_result_count', 'Search - Desired Result Count', Setting.CAT_BEHAVIOUR, type=int,
 		description='How many maps matching add requirements we should try to search for.',
-		default=100
+		default=60
 	)
 	
 	async def on_start(self):
@@ -162,7 +162,7 @@ class ReviewApp(AppConfig):
 			.add_param('mx_id', type=int, required=True, help='MX map id'),
 			
 			Command(command='remove', namespace=self.namespace, admin=True,
-				target=self.command_remove_map_from_review, description='Removes a MX map from review.')
+				target=self.command_remove_map_from_review, description='Removes a MX map from review. Use "//review reset <mx_id>" if you later need to add the map again.')
 			.add_param('mx_id', type=int, required=True, help='MX map id'),
 			
 			Command(command='reset', namespace=self.namespace, admin=True,
@@ -185,7 +185,6 @@ class ReviewApp(AppConfig):
 		await self.widget.display()
 	
 	async def player_connect(self, player, is_spectator, source, signal):
-		print('foo')
 		await self.widget.display(player=player)
 	
 	async def map_end(self, map):
@@ -209,6 +208,10 @@ class ReviewApp(AppConfig):
 	async def get_map_scores(self):
 		map_scores = []
 		for map in self.instance.map_manager.maps:
+			map_review = await MapReviewModel.get_or_none(MapReviewModel.map == map.get_id())
+			if map_review is None:
+				continue
+			
 			karma = await self.instance.apps.apps['karma'].get_map_karma(map)
 			score = int((1+karma['map_karma'])*50 / karma['vote_count'] if karma['vote_count'] > 0 else 0)
 			
@@ -221,13 +224,15 @@ class ReviewApp(AppConfig):
 			map_scores.append({
 				'map_name': map.name,
 				'author_login': map.author_login,
+				'votes': karma['vote_count'],
 				'score': score,
-				'color': color
+				'color': color,
+				'mx_id': map_review.mx_id
 			})
 		map_scores.sort(key=lambda map_score: map_score['score'], reverse=True)
 		return map_scores
 	
-	async def search_maps(self, map_name=None, author_name=None):
+	async def search_maps(self, map_name=None, author_name=None, check_add_requirements=True):
 		# Prepare mandatory tags to pre-filter with
 		tags = await (await self._mx.api.list_tags())
 		mandatory_tag_names = (await self.setting_add_mandatory_tag_names.get_value()).split(',')
@@ -245,30 +250,35 @@ class ReviewApp(AppConfig):
 			'priord': 4,
 			'limit': 100,
 		}
-		
-		if len(mandatory_tag_ids) > 0:
+		if check_add_requirements and len(mandatory_tag_ids) > 0:
 			options['tags'] = ','.join(mandatory_tag_ids)
 		if map_name:
 			options['trackname'] = map_name
 		if author_name:
 			options['anyauthor'] = author_name
-		
 		while page < max_page and len(mx_infos) < desired_result_count:
 			page += 1
 			options['page'] = page
 			
-			
-			
 			results = await self._mx.api.search(options)
 			for mx_info in results:
-				if await self.can_add_map_for_review(mx_info['TrackID'], mx_info=mx_info, tags=tags):
-					mx_infos.append(mx_info)
+				can_add = await self.can_add_map_for_review(mx_info['TrackID'], mx_info=mx_info, tags=tags)
+				if not check_add_requirements or can_add:
+					map_review = await MapReviewModel.get_or_none(MapReviewModel.mx_id == mx_info['MapID'])
+					is_add = map_review is None
+					review_map = await map_review.map if map_review else None
+					is_update = not is_add and len([map for map in self.instance.map_manager.maps if map == review_map]) > 0
+					mx_infos.append({**mx_info, 'Action': 'Add' if is_add else ('Update' if is_update else 'Reset'), 'CanAdd': can_add})
 				if len(mx_infos) >= desired_result_count:
 					break
 		
 		return mx_infos
 	
 	async def can_auto_remove_from_review(self, map):
+		if len(self.instance.map_manager.maps) == 1:
+			# Server would be left with no maps
+			return False
+		
 		map_review = await MapReviewModel.get_or_none(MapReviewModel.map == map.get_id())
 		if map_review is None:
 			# This map was not added through the review app so it won't be removed
@@ -374,6 +384,7 @@ class ReviewApp(AppConfig):
 		await self.request_reset_map_review_state(player, data.mx_id)
 	
 	async def request_reset_map_review_state(self, player, mx_id):
+		await self.request_remove_map_from_review(player, mx_id)
 		try:
 			map_review = await MapReviewModel.get(MapReviewModel.mx_id == mx_id)
 			await map_review.destroy()
@@ -381,15 +392,17 @@ class ReviewApp(AppConfig):
 		except:
 			await self.instance.chat('$f00Map not in review.', player.login)
 	
-	async def request_add_map_for_review(self, player, mx_id):
+	async def request_add_map_for_review(self, player, mx_id, check_add_requirements=True):
 		callbacks = AddMapForReviewCallback(self.instance, player)
 		try:
-			await self.validate_add_requirements(mx_id)
+			if check_add_requirements:
+				await self.validate_add_requirements(mx_id)
 			filepath_template = await self.setting_filepath_template.get_value()
 			await self._mx.add_mx_map([mx_id], filepath_template=filepath_template, overwrite=True,
 				on_add=callbacks.add, on_error=callbacks.error)
 		except MapReviewAddException as e:
 			await self.instance.chat('$f00Map cannot be added for review: {}.'.format(e), player.login)
+		await self.widget.refresh()
 
 	async def request_remove_map_from_review(self, player, mx_id):
 		try:
@@ -401,6 +414,7 @@ class ReviewApp(AppConfig):
 			await self.instance.chat('$ff0Map has been removed from review.', player.login)
 		except:
 			await self.instance.chat('$f00Map not in review.', player.login)
+		await self.widget.refresh()
 
 
 

@@ -52,7 +52,7 @@ class ReviewListWindow(ManualListView):
 	title = 'Map Review Ranking'
 	template_name = 'review/list.xml'
 	icon_style = 'Icons128x128_1'
-	icon_substyle = 'Statistics'
+	icon_substyle = 'Rankings'
 	
 	def __init__(self, app, player):
 		super().__init__(self)
@@ -75,7 +75,7 @@ class ReviewListWindow(ManualListView):
 				'index': 'map_name',
 				'sorting': True,
 				'searching': True,
-				'width': 110,
+				'width': 79 + (30 if self.player.level == 0 else 0),
 				'type': 'label'
 			},
 			{
@@ -83,7 +83,15 @@ class ReviewListWindow(ManualListView):
 				'index': 'author_login',
 				'sorting': True,
 				'searching': True,
-				'width': 74,
+				'width': 50,
+				'type': 'label'
+			},
+			{
+				'name': 'Votes',
+				'index': 'votes',
+				'sorting': True,
+				'searching': False,
+				'width': 24,
 				'type': 'label'
 			},
 			{
@@ -98,6 +106,8 @@ class ReviewListWindow(ManualListView):
 		]
 	
 	def _bgcolor_renderer(self, row, field):
+		if 'action' in field:
+			return 'FF000060'
 		return row['color']
 
 	async def get_context_data(self):
@@ -114,13 +124,34 @@ class ReviewListWindow(ManualListView):
 			map_score['rank'] = index + 1
 			data.append(map_score)
 		return data
-
+	
+	async def get_actions(self):
+		if self.player.level == 0:
+			return []
+		return [
+			{
+				'name': 'Remove',
+				'type': 'label',
+				'text': 'Remove',
+				'width': 30,
+				'action': self.action_remove,
+				'safe': True,
+				'bgcolor': True
+			}
+		]
+	
+	async def action_remove(self, player, values, map, *args, **kwargs):
+		await self.app.request_remove_map_from_review(self.player, map['mx_id'])
+		await self.refresh()
+	
 
 class ReviewAddWindow(ManualListView):
 	title = 'Add Map for Review'
 	template_name = 'review/review_add_window.xml'
 	icon_style = 'Icons128x128_1'
-	icon_substyle = 'ProfileAdvanced'
+	icon_substyle = 'Load'
+	
+	substyle_index = 0
 	
 	def __init__(self, app, player):
 		super().__init__(self)
@@ -132,32 +163,42 @@ class ReviewAddWindow(ManualListView):
 		self.search_map = None
 		self.search_author = None
 		self.provide_search = True
+		self.must_check_add_requirements = self.player.level == 0
+		self.check_add_requirements = self.must_check_add_requirements
 		self.subscribe('search', self.action_search)
+		self.subscribe('check_add_requirements', self.action_check_add_requirements)
 	
 	async def get_fields(self):
 		return [
 			{
+				'name': '#',
+				'index': 'index',
+				'sorting': True,
+				'searching': True,
+				'width': 10,
+			},
+			{
 				'name': 'Map',
 				'index': 'GbxMapName',
-				'sorting': False,
-				'width': 110,
-				'type': 'label'
+				'sorting': True,
+				'width': 95,
 			},
 			{
 				'name': 'Author',
 				'index': 'Username',
-				'sorting': False,
-				'width': 74,
-				'type': 'label'
+				'sorting': True,
+				'width': 45,
 			},
-		]
-	
-	async def get_actions(self):
-		return [
+			{
+				'name': 'Awards',
+				'index': 'AwardCount',
+				'sorting': True,
+				'width': 20,
+				'renderer': self.awards_renderer
+			},
 			{
 				'name': 'Add',
-				'type': 'label',
-				'text': 'Add Or Update',
+				'index': 'Action',
 				'width': 30,
 				'action': self.action_add,
 				'safe': True,
@@ -166,10 +207,32 @@ class ReviewAddWindow(ManualListView):
 		]
 	
 	async def action_add(self, player, values, map, *args, **kwargs):
-		await self.app.request_add_map_for_review(self.player, map['MapID'])
+		if map['Action'] == 'Reset':
+			await self.app.request_reset_map_review_state(self.player, map['MapID'])
+			for index in range(len(self.cache)):
+				if self.cache[index]['MapID'] == map['MapID']:
+					self.cache[index]['Action'] = 'Add'
+		else:
+			await self.app.request_add_map_for_review(self.player, map['MapID'],
+				check_add_requirements=self.check_add_requirements)
+			
+			if not self.check_add_requirements:
+				for index in range(len(self.cache)):
+					if self.cache[index]['MapID'] == map['MapID']:
+						self.cache[index]['Action'] = 'Reset'
+						self.cache[index]['CanAdd'] = False
+			else:
+				self.cache = [_map for _map in self.cache if _map['MapID'] != map['MapID']]
+		await self.refresh(self.player)
+	
+	async def action_check_add_requirements(self, *args, **kwargs):
+		self.check_add_requirements = not self.check_add_requirements
+		await self.do_search(refresh=True)
 	
 	async def do_search(self, refresh=False):
-		self.cache = await self.app.search_maps(map_name=self.search_map, author_name=self.search_author)
+		self.cache = await self.app.search_maps(map_name=self.search_map, author_name=self.search_author, 
+			check_add_requirements=self.check_add_requirements)
+		self.cache = [{**map_info, 'index': index} for index, map_info in enumerate(self.cache)]
 		if refresh:
 			await self.refresh(self.player)
 	
@@ -184,19 +247,27 @@ class ReviewAddWindow(ManualListView):
 
 		await self.do_search(refresh=True)
 	
+	def awards_renderer(self, row, field):
+		return '🏆 {}'.format(row['AwardCount']) if row['AwardCount'] > 0 else ''
+	
 	def _bgcolor_renderer(self, row, field):
-		return '00FF0070'
+		if row['CanAdd']:
+			return '00FF0060'
+		return 'FF000060'
 
 	async def get_object_data(self):
 		data = await super().get_object_data()
 		data['search_map'] = self.search_map
 		data['search_author'] = self.search_author
+		data['must_check_add_requirements'] = self.must_check_add_requirements
+		data['check_add_requirements'] = self.check_add_requirements
 		return data
 
 	async def get_context_data(self):
 		context = await super().get_context_data()
 		context.update({
-			'bgcolor_renderer': self._bgcolor_renderer
+			'bgcolor_renderer': self._bgcolor_renderer,
+			'field_renderer': self._render_field
 		})
 		return context
 

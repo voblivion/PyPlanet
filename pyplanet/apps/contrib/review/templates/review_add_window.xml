@@ -9,6 +9,9 @@
              focusareacolor1="0003" name="author" selecttext="1" textsize="1.6"
              focusareacolor2="FFF2" scriptevents="1" valign="center" />
 
-  <label pos="124 -1.35" size="6 6" focusareacolor2="FFF2" focusareacolor1="0003"
-         text="🔍" action="{{ id }}__search" />
+  <quad pos="124 -1.35" size="6 6" bgcolor="FFFA" style="Icons64x64_1" substyle="Maximize" action="{{ id }}__search" />
+  {% if not must_check_add_requirements %}
+  <label pos="136 -3.675" size="40 6" textsize="1.6" text="Check Add Requirements" valign="center"/>
+  <quad pos="178 -1.35" size="6 6" bgcolor="FFFA" style="Icons64x64_1" substyle="{% if check_add_requirements %}LvlGreen{% else %}LvlRed{% endif %}" action="{{ id }}__check_add_requirements" />
+  {% endif %}
 {% endblock %}
