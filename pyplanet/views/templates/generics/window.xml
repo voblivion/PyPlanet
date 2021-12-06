@@ -1,0 +1,67 @@
+<!-- PARAMETERS:
+	body_height
+	head_body_padding
+	head_height
+	head_style
+	head_substyle
+	icon_style
+	icon_substyle
+	outer_padding
+	title
+	window_style
+	window_substyle
+	window_width
+	no_refresh
+-->
+
+{% set window_height = outer_padding + head_height + head_body_padding + body_height + outer_padding %}
+{% set window_x = -window_width/2 %}
+{% set window_y = window_height/2 %}
+{% set inner_width = window_width - 2 * outer_padding %}
+
+{% set title_x = 1 %}
+{% set title_width = inner_width - 2 * head_height %}
+{% if icon_style %}
+{% set title_x = title_x + head_height %}
+{% endif %}
+
+{% set refresh_x = window_width - outer_padding %}
+
+<!-- WINDOW -->
+{% if window_style %}
+<quad pos="{{ window_x }} {{ window_y }}" size="{{ window_width }} {{ window_height }}"
+	halign="left" valign="top" z-index="-104"
+	style="{{ window_style }}"substyle="{{ window_substyle }}"/>
+{% endif %}
+<frame pos="{{ window_x }} {{ window_y }}" z-index="-103">
+	<!-- HEAD -->
+	{% block window_head %}
+	{% if head_style %}
+	<quad pos="{{ outer_padding }} {{ -outer_padding }}" size="{{ inner_width }} {{ head_height }}"
+		halign="left" valign="top" z-index="-102" style="{{ head_style }}"
+		substyle="{{ head_substyle }}"/>
+	{% endif %}
+	<frame pos="{{ outer_padding }} {{ -outer_padding }}" z-index="-101">
+		{% if icon_style %}
+		<quad pos="1 -1" size="{{ head_height - 2 }} {{ head_height - 2 }}"
+			style="{{ icon_style }}" substyle="{{ icon_substyle }}"/>
+		{% endif %}
+		<label pos="{{ title_x }} {{ -(head_height - 2) / 2 - 1 }}" valign="center"
+			size="{{ title_width }} {{ head_height - 2 }}"
+			text="$o{{ title }}" textsize="2.5" textcolor="FFFFFFFF"/>
+		{% if not no_refresh %}
+		<quad pos="{{ 1 + inner_width - head_height * 2 + 1 + 4.5 }} -2.5"
+			size="{{ head_height-5 }} {{ head_height-5 }}"
+			style="Icons64x64_1" substyle="Refresh" action="{{ id }}__refresh" />
+		{% endif %}
+		<quad pos="{{ 1 + inner_width - head_height + 1 }} -2"
+			size="{{ head_height-4 }} {{ head_height-4 }}"
+			style="Icons128x32_1" substyle="Close" action="{{ id }}__close"/>
+	</frame>
+	{% endblock %}
+	
+	<!-- BODY -->
+	<frame pos="{{ outer_padding }} {{ -(outer_padding + head_height + head_body_padding) }}" z-index="-101">
+		{% block window_body %}{% endblock %}
+	</frame>
+</frame>

@@ -1,0 +1,23 @@
+{% extends 'core.views/generics/window.xml' %}
+
+{% block window_body %}
+
+<!-- CONTENT -->
+<frame pos="0 0" z-index="-101">
+	{{ content|safe }}
+</frame>
+
+<!-- FOOTER -->
+<frame pos="1 {{ -content_height }}" z-index="-101">
+	<quad pos="2 -2" size="{{ footer_height-4 }} {{ footer_height-4 }}" style="UICommon64_1"
+		action="{{ id }}__toggle_show_again"
+		substyle="{% if show_again %}CheckboxCircle_light{% else %}CheckedCircle_light{% endif %}"/>
+	<label pos="{{ footer_height }} {{ -footer_height/2 }}" size="74 {{ footer_height-2 }}"
+		text="Do not show again." textsize="1" valign="center"/>
+	<quad pos="{{ inner_width/2 }} {{ -footer_height/2 }}" size="42 {{ footer_height-2 }}" z-index="0"
+		style="Bgs1" substyle="BgTitle" valign="center" halign="center"/>
+	<label pos="{{ inner_width/2 }} {{ -footer_height/2 }}" size="42 {{ footer_height-2 }}" text="$o$fffClose" textsize="1.3"
+		valign="center" halign="center" z-index="1" focusareacolor1="0000" focusareacolor2="80AA"
+		action="{{ id }}__close"/>
+</frame>
+{% endblock %}

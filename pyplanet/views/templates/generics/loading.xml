@@ -1,0 +1,6 @@
+
+<quad pos="0 0" size="64 64" halign="center" valign="center" z-index="1000" style="Bgs1InRace" substyle="Shadow"/>
+
+<quad pos="0 0" size="24 24" halign="center" valign="center" z-index="1001" style="Icons128x128_Blink" substyle="Default"/>
+
+<label pos="0 -14" size="32 16" halign="center" valign="center" z-index="1001" text="Loading..."/>

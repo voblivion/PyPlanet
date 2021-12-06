@@ -4,7 +4,9 @@ from datetime import datetime
 
 from pyplanet.apps.config import AppConfig
 from pyplanet.apps.contrib.karma import callbacks as karma_signals
+from pyplanet.apps.contrib.karma.models import Karma as KarmaModel
 from pyplanet.apps.core.maniaplanet import callbacks as mp_signals
+from pyplanet.apps.core.trackmania import callbacks as tm_signals
 from pyplanet.contrib.command import Command
 from pyplanet.contrib.setting import Setting
 from pyplanet.utils.relativedelta import read_relativedelta
@@ -122,8 +124,14 @@ class ReviewApp(AppConfig):
 	)
 	
 	setting_remove_required_vote_count = Setting(
-		'remove_required_vote_count', 'Remove - Required Vote Count', Setting.CAT_BEHAVIOUR, type=float,
+		'remove_required_vote_count', 'Remove - Required Vote Count', Setting.CAT_BEHAVIOUR, type=int,
 		description='Number of votes (karma) necessary before map can be removed for having a too low karma.',
+		default=10
+	)
+	
+	setting_remove_required_map_count = Setting(
+		'remove_required_map_count', 'Remove - Required Map Count', Setting.CAT_BEHAVIOUR, type=int,
+		description='Minimum number of map on the server for a map to be removed. Else map will be kept until a better one is added, even if its karma is below required.',
 		default=10
 	)
 	
@@ -139,6 +147,7 @@ class ReviewApp(AppConfig):
 		default=60
 	)
 	
+	# Lifecycle
 	async def on_start(self):
 		await super().on_start()
 		await self.instance.permission_manager.register(
@@ -153,6 +162,7 @@ class ReviewApp(AppConfig):
 		await self.context.setting.register(self.setting_remove_required_recency)
 		await self.context.setting.register(self.setting_remove_required_karma)
 		await self.context.setting.register(self.setting_remove_required_vote_count)
+		await self.context.setting.register(self.setting_remove_required_map_count)
 		await self.context.setting.register(self.setting_search_max_page)
 		await self.context.setting.register(self.setting_search_desired_result_count)
 		
@@ -174,9 +184,11 @@ class ReviewApp(AppConfig):
 		self.widget = ReviewWidget(self)
 		await self.widget.display()
 		
-		self.context.signals.listen(karma_signals.vote_changed, self.update_widget)
+		self.context.signals.listen(karma_signals.vote_changed, self.karma_vote_changed)
+		self.context.signals.listen(mp_signals.flow.podium_start, self.podium_start)
 		self.context.signals.listen(mp_signals.player.player_connect, self.player_connect)
-		self.instance.signals.listen('maniaplanet:playlist_modified', self.update_widget)
+		self.context.signals.listen(tm_signals.finish, self.player_finish)
+		self.instance.signals.listen('maniaplanet:playlist_modified', self.playlist_modified)
 		
 		self._karma = self.instance.apps.apps['karma']
 		self._mx = self.instance.apps.apps['mx']
@@ -184,18 +196,33 @@ class ReviewApp(AppConfig):
 	async def map_begin(self, map):
 		await self.widget.display()
 	
-	async def player_connect(self, player, is_spectator, source, signal):
-		await self.widget.display(player=player)
-	
 	async def map_end(self, map):
 		await self.try_auto_remove_map_from_review(map)
 	
+	# Callbacks
+	async def podium_start(self, *args, **kwargs):
+		await self.show_vote_window()
+	
+	async def player_connect(self, player, is_spectator, source, signal):
+		await self.widget.display(player=player)
+	
+	async def player_finish(self, player, *args, **kwargs):
+		try:
+			map = self.instance.map_manager.current_map
+			vote = await KarmaModel.get(KarmaModel.map_id == map.get_id(), KarmaModel.player_id == player.get_id())
+		except:
+			self.show_vote_window(player)
+	
+	async def karma_vote_changed(self, *args, **kwargs):
+		await self.update_widget(*args, **kwargs)
+	
+	async def playlist_modified(self, *args, **kwargs):
+		await self.update_widget(*args, **kwargs)
+	
+	# Functionnalities
 	async def try_auto_remove_map_from_review(self, map):
 		if self.can_auto_remove_from_review(map):
 			await self.instance.map_manager.remove_map(map, delete_file=True)
-	
-	async def update_widget(self, *args, **kwargs):
-		await self.widget.display()
 	
 	async def show_list_window(self, player):
 		view = ReviewListWindow(self, player)
@@ -204,6 +231,13 @@ class ReviewApp(AppConfig):
 	async def show_add_window(self, player):
 		view = ReviewAddWindow(self, player)
 		await view.display(player=player)
+	
+	async def show_vote_window(self, player=None):
+		# TODO
+		print('ReviewApp::show_vote_window')
+	
+	async def update_widget(self, *args, **kwargs):
+		await self.widget.display()
 	
 	async def get_map_scores(self):
 		map_scores = []
@@ -291,19 +325,34 @@ class ReviewApp(AppConfig):
 		if map_review.tmx_updated_at < min_updated_at:
 			return True
 		
-		# Required Karma & Vote Count
+		# Required Vote Count
 		required_vote_count = await self.setting_remove_required_vote_count.get_value()
-		if required_vote_count > 0:
-			karma = await self._karma.get_map_karma(map)
-			required_karma = await self.setting_remove_required_karma.get_value()
-			
-			vote_count = karma['vote_count']
-			karma = karma['map_karma'] / vote_count
-			
-			if vote_count >= required_vote_count and karma < required_karma:
-				return True
+		if required_vote_count <= 0:
+			return False
+		raw_karma = await self._karma.get_map_karma(map)
+		if raw_karma['vote_count'] < required_vote_count:
+			return False
 		
-		return False
+		# Required karma
+		required_karma = await self.setting_remove_required_karma.get_value()
+		karma = raw_karma['map_karma'] / raw_karma['vote_count']
+		if karma >= required_karma:
+			return False
+		
+		# Required Map Count
+		better_maps = 0
+		for other_map in self.instance.map_manager.maps:
+			other_raw_karma = self._karma.get_map_karma(other_map)
+			if other_raw_karma['vote_count'] < required_vote_count:
+				continue
+			other_karma = other_raw_karma['map_karma'] / other_raw_karma['vote_count']
+			if other_karma > karma:
+				better_maps += 1
+		required_map_count = await self.setting_remove_required_map_count.get_value()
+		if better_maps < required_map_count:
+			return False
+		
+		return True
 	
 	async def validate_add_requirements(self, mx_id, mx_info=None, tags=None):
 		if mx_info is None:
@@ -366,7 +415,6 @@ class ReviewApp(AppConfig):
 			raise MapReviewAddException('too long')
 		
 		return True
-		
 	
 	async def can_add_map_for_review(self, mx_id, mx_info=None, tags=None):
 		try:
@@ -374,15 +422,6 @@ class ReviewApp(AppConfig):
 		except MapReviewAddException:
 			return False
 		return True
-	
-	async def command_add_map_for_review(self, player, data, **kwargs):
-		await self.request_add_map_for_review(player, data.mx_id)
-	
-	async def command_remove_map_from_review(self, player, data, **kwargs):
-		await self.request_remove_map_from_review(player, data.mx_id)
-	
-	async def command_reset_map_review_state(self, player, data, **kwargs):
-		await self.request_reset_map_review_state(player, data.mx_id)
 	
 	async def request_reset_map_review_state(self, player, mx_id):
 		await self.request_remove_map_from_review(player, mx_id)
@@ -416,15 +455,18 @@ class ReviewApp(AppConfig):
 		except:
 			await self.instance.chat('$f00Map not in review.', player.login)
 		await self.widget.refresh()
-
-
-
-
-
-
-
-
-
+	
+	# Command processors
+	async def command_add_map_for_review(self, player, data, **kwargs):
+		await self.request_add_map_for_review(player, data.mx_id)
+	
+	async def command_remove_map_from_review(self, player, data, **kwargs):
+		await self.request_remove_map_from_review(player, data.mx_id)
+	
+	async def command_reset_map_review_state(self, player, data, **kwargs):
+		await self.request_reset_map_review_state(player, data.mx_id)
+	
+	# EOF
 
 
 
